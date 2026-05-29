@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Local scratch / experiments (not part of the published project)
+test.py
+URL.md

@@ -38,3 +38,7 @@ Same hybrid set as the Python version: fist, open palm, peace, thumbs up,
 pointing, OK — with a finger-count fallback (0–5). Each plays a synthesized note
 by default, or a matching file from [sounds/](sounds/) if present
 (see [sounds/README.md](sounds/README.md)).
+
+**Two-hand theremin:** show both hands at once and a continuous tone plays whose
+pitch follows the distance between your palms — close together is low (~150 Hz),
+far apart is high (~900 Hz). The tone stops when you drop back to one hand.

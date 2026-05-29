@@ -16,6 +16,10 @@ const GESTURE_COOLDOWN = 0.6; // seconds before the same gesture re-triggers
 const STABLE_FRAMES = 2; // frames a gesture must persist before it counts
 const SOUNDS_DIR = "./sounds"; // optional <gesture>.mp3 files live here
 
+// Two-hand theremin: maps the normalized distance between the hands to a pitch.
+// Hands close together -> low note; far apart -> high note (continuous glide).
+const THEREMIN = { dMin: 0.1, dMax: 0.7, fMin: 150, fMax: 900, volume: 0.22 };
+
 // Gesture -> musical note frequency (Hz), C major scale. Synthesized fallback.
 const NOTE_FREQUENCIES = {
   fist: 261.63, // C4
@@ -54,6 +58,7 @@ const INDEX_TIP = 8, INDEX_PIP = 6;
 const MIDDLE_TIP = 12, MIDDLE_PIP = 10;
 const RING_TIP = 16, RING_PIP = 14;
 const PINKY_TIP = 20, PINKY_PIP = 18;
+const PALM = 9; // middle-finger MCP, used as a stable palm center
 
 // --------------------------------------------------------------------------- //
 // Audio (Web Audio API): synthesized notes + optional file overrides
@@ -128,6 +133,38 @@ function playGesture(gesture) {
   }
 }
 
+// Continuous "theremin" voice: one long-running oscillator whose pitch and
+// volume we steer in real time. Created lazily on first use, then left running
+// (silenced via its gain) so there are no start/stop clicks.
+let theremin = null;
+
+function thereminUpdate(freq) {
+  if (!theremin) {
+    const osc = audioCtx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    theremin = { osc, gain };
+  }
+  const now = audioCtx.currentTime;
+  // setTargetAtTime gives a smooth glide rather than stepping per frame.
+  theremin.osc.frequency.setTargetAtTime(freq, now, 0.02);
+  theremin.gain.gain.setTargetAtTime(THEREMIN.volume, now, 0.02);
+}
+
+function thereminStop() {
+  if (!theremin) return;
+  theremin.gain.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.05);
+}
+
+function distanceToFreq(d) {
+  const t = Math.min(1, Math.max(0, (d - THEREMIN.dMin) / (THEREMIN.dMax - THEREMIN.dMin)));
+  return THEREMIN.fMin + t * (THEREMIN.fMax - THEREMIN.fMin);
+}
+
 // --------------------------------------------------------------------------- //
 // Gesture detection (ported from the Python classifier)
 // --------------------------------------------------------------------------- //
@@ -192,6 +229,28 @@ let lastPlayTime = 0;
 let candidate = null;
 let candidateCount = 0;
 let lastVideoTime = -1;
+let lastOverlay = { title: "No hand", sub: "" };
+
+function drawHand(lm) {
+  drawingUtils.drawConnectors(lm, HandLandmarker.HAND_CONNECTIONS, {
+    color: "#5b8cff",
+    lineWidth: 4,
+  });
+  drawingUtils.drawLandmarks(lm, { color: "#6ee7a8", radius: 4 });
+}
+
+// Dashed line between the two palm centers (normalized coords -> canvas pixels).
+function drawHandLink(a, b) {
+  ctx.save();
+  ctx.strokeStyle = "#ffd166";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 8]);
+  ctx.beginPath();
+  ctx.moveTo(a.x * canvas.width, a.y * canvas.height);
+  ctx.lineTo(b.x * canvas.width, b.y * canvas.height);
+  ctx.stroke();
+  ctx.restore();
+}
 
 async function createLandmarker() {
   const vision = await FilesetResolver.forVisionTasks(
@@ -204,7 +263,7 @@ async function createLandmarker() {
       delegate: "GPU",
     },
     runningMode: "VIDEO",
-    numHands: 1,
+    numHands: 2,
   });
 }
 
@@ -228,25 +287,40 @@ function renderLoop() {
   ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
   ctx.restore();
 
-  let gesture = null;
-
   if (video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const result = handLandmarker.detectForVideo(canvas, performance.now());
+    const hands = result.landmarks || [];
 
-    if (result.landmarks && result.landmarks.length > 0) {
-      const lm = result.landmarks[0];
+    if (hands.length >= 2) {
+      // --- Two hands: continuous theremin driven by their distance ---
+      drawHand(hands[0]);
+      drawHand(hands[1]);
+
+      const a = hands[0][PALM];
+      const b = hands[1][PALM];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const freq = distanceToFreq(d);
+
+      drawHandLink(a, b);
+      thereminUpdate(freq);
+
+      // Reset single-hand state so a gesture re-triggers when one hand returns.
+      candidate = null;
+      candidateCount = 0;
+      lastGesture = null;
+
+      lastOverlay = { title: "🎻 Theremin", sub: `${Math.round(freq)} Hz` };
+    } else if (hands.length === 1) {
+      // --- One hand: discrete gesture sounds (theremin off) ---
+      thereminStop();
+      const lm = hands[0];
       // Handedness flips because we detect on the mirrored canvas — matches Python.
       const rawLabel = result.handednesses?.[0]?.[0]?.categoryName ?? "Right";
       const handedness = rawLabel === "Right" ? "Left" : "Right";
 
-      drawingUtils.drawConnectors(lm, HandLandmarker.HAND_CONNECTIONS, {
-        color: "#5b8cff",
-        lineWidth: 4,
-      });
-      drawingUtils.drawLandmarks(lm, { color: "#6ee7a8", radius: 4 });
-
-      gesture = classify(lm, handedness);
+      drawHand(lm);
+      const gesture = classify(lm, handedness);
 
       if (gesture === candidate) candidateCount++;
       else {
@@ -264,23 +338,22 @@ function renderLoop() {
           lastPlayTime = now;
         }
       }
+
+      const f = NOTE_FREQUENCIES[gesture];
+      const sub = fileBuffers[gesture] ? "file" : `${Math.round(f)} Hz`;
+      lastOverlay = { title: GESTURE_LABELS[gesture] ?? gesture, sub };
     } else {
+      // --- No hands ---
+      thereminStop();
       candidate = null;
       candidateCount = 0;
       lastGesture = null;
+      lastOverlay = { title: "No hand", sub: "" };
     }
   }
 
-  // Overlay text
-  if (gesture) {
-    gestureEl.textContent = GESTURE_LABELS[gesture] ?? gesture;
-    const f = NOTE_FREQUENCIES[gesture];
-    const src = fileBuffers[gesture] ? "file" : `${Math.round(f)} Hz`;
-    noteEl.textContent = src;
-  } else {
-    gestureEl.textContent = "No hand";
-    noteEl.textContent = "";
-  }
+  gestureEl.textContent = lastOverlay.title;
+  noteEl.textContent = lastOverlay.sub;
 
   requestAnimationFrame(renderLoop);
 }

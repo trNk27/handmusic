@@ -11,7 +11,7 @@ Browsers require a secure context for the camera. `http://localhost` counts as
 secure, so a tiny local server works:
 
 ```powershell
-# from the web/ folder
+# from the docs/ folder
 py -m http.server 8000
 # then open http://localhost:8000
 ```
@@ -23,7 +23,7 @@ the MediaPipe model + WASM, a few MB.)
 
 1. Push this repo to GitHub.
 2. Repo **Settings → Pages → Build and deployment → Source: Deploy from a branch**,
-   pick your branch and `/ (root)` or set the folder appropriately.
+   then set **Branch: `main`** and **Folder: `/docs`**, and click **Save**.
 3. Open the published URL. Because Pages is HTTPS, the camera works — including
    **on your phone**: open the URL on the phone and it uses the phone's camera
    directly (no IP-camera app needed).
